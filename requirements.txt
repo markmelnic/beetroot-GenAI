@@ -1,0 +1,28 @@
+# AI Agent Project Dependencies
+
+# Core dependencies
+requests>=2.31.0
+python-dotenv>=1.0.0
+
+# Data manipulation
+pandas>=2.0.0
+numpy>=1.24.0
+
+# Code analysis (using built-in ast module, no external package needed)
+# ast is built into Python, so we don't need to install it
+black>=23.0.0
+flake8>=6.0.0
+
+# Web framework (for demo purposes)
+flask>=2.3.0
+
+# Testing
+pytest>=7.4.0
+
+# Development tools
+ipython>=8.0.0
+jupyter>=1.0.0
+
+# Optional: For enhanced LLM interactions
+langchain>=0.1.0
+langchain-community>=0.0.10
