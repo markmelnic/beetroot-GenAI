@@ -24,8 +24,11 @@ import os
 import time
 import json
 
-# Add the parent directory to the path so we can import our modules
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+PARENT_DIR = os.path.dirname(CURRENT_DIR)
+
+# Add the current and parent directories to the path so we can import our modules
+sys.path.extend([path for path in {CURRENT_DIR, PARENT_DIR} if path not in sys.path])
 
 from agents.base_agent import BaseAgent
 from agents.memory import Memory
@@ -33,6 +36,7 @@ from agents.planner import Planner, TaskStatus, TaskPriority
 from tools.code_tools import analyze_code, lint_code
 from tools.data_tools import analyze_data, transform_data
 from config.settings import get_config
+from console_layout import ConsoleLayout
 
 
 class PlanningAgent(BaseAgent):
@@ -57,18 +61,34 @@ class PlanningAgent(BaseAgent):
         ]
         
         super().__init__(model=model, tools=tools)
-        
-        # Initialize memory and planning systems
+
+        # Initialize helpers, memory, and planning systems
+        self.console = ConsoleLayout(width=70)
         self.memory = Memory()
         self.planner = Planner()
-        
-        print(f"🧠 Planning Agent initialized with model: {self.model}")
-        print(f"🔧 Available tools: {len(self.tools)}")
-        print(f"💾 Memory system: {self.memory.get_stats()['total_items']} items")
-        print(f"📋 Planning system: Ready for task decomposition")
-        print()
-        print("💡 This agent can remember, plan, and solve complex multi-step problems.")
-        print()
+
+        intro = self.console.compose(
+            self.console.banner("Planning Agent Ready"),
+            self.console.section(
+                "Initialization Summary",
+                self.console.key_values(
+                    [
+                        ("Model", self.model),
+                        ("Registered tools", len(self.tools)),
+                        ("Memory items", self.memory.get_stats()["total_items"]),
+                        ("Planning status", "Ready for task decomposition"),
+                    ]
+                )
+                + [
+                    self.console.spacer(),
+                    self.console.highlight(
+                        "💡",
+                        "This agent can remember, plan, and solve complex multi-step problems.",
+                    ),
+                ],
+            ),
+        )
+        print(intro)
     
     def run_with_memory(self, input_data: str) -> dict:
         """
@@ -125,11 +145,12 @@ Important memories:
         Returns:
             Plan execution results
         """
-        print(f"🎯 Creating plan for goal: {goal}")
-        
+        log_lines = [self.console.highlight("🎯", f"Goal: {goal}")]
+
         # Create a new plan
         plan_id = self.planner.create_plan(goal)
-        
+        log_lines.extend(self.console.key_values([("Plan ID", plan_id)]))
+
         # Store the plan in memory
         self.memory.store(
             content={"goal": goal, "plan_id": plan_id},
@@ -137,21 +158,27 @@ Important memories:
             importance=0.9,
             metadata={"created_at": time.time()}
         )
-        
+
         # Decompose the goal into subtasks
-        subtasks = self._decompose_goal(goal)
-        
+        subtasks, decomposition_messages = self._decompose_goal(goal)
+        log_lines.extend(decomposition_messages)
+
         if subtasks:
             self.planner.decompose_task(plan_id, subtasks)
-            print(f"📋 Plan created with {len(subtasks)} subtasks")
-            
+            log_lines.append(
+                self.console.highlight("📋", f"Plan created with {len(subtasks)} subtasks")
+            )
+
             # Execute the plan
-            return self._execute_plan(plan_id)
-        else:
-            print("❌ Could not decompose goal into subtasks")
-            return {"error": "Goal decomposition failed"}
+            execution = self._execute_plan(plan_id)
+            log_lines.extend(execution.get("log_lines", []))
+            execution["log_lines"] = log_lines
+            return execution
+
+        log_lines.append(self.console.highlight("❌", "Could not decompose goal into subtasks"))
+        return {"error": "Goal decomposition failed", "plan_id": plan_id, "log_lines": log_lines}
     
-    def _decompose_goal(self, goal: str) -> list:
+    def _decompose_goal(self, goal: str) -> tuple[list, list[str]]:
         """
         Decompose a goal into subtasks using the LLM.
         
@@ -176,6 +203,8 @@ For each subtask, provide:
 Respond with a JSON array of subtasks.
 """
         
+        messages: list[str] = []
+
         try:
             response = self._call_llm(prompt)
             
@@ -200,11 +229,11 @@ Respond with a JSON array of subtasks.
                         }
                         cleaned_subtasks.append(cleaned_subtask)
                 
-                return cleaned_subtasks
-            
+                return cleaned_subtasks, messages
+
         except Exception as e:
-            print(f"⚠️  Goal decomposition failed: {e}")
-        
+            messages.append(self.console.highlight("⚠️", f"Goal decomposition failed: {e}"))
+
         # Fallback: create basic subtasks
         return [
             {
@@ -228,7 +257,7 @@ Respond with a JSON array of subtasks.
                 "estimated_time": 3,
                 "dependencies": [1]
             }
-        ]
+        ], messages
     
     def _execute_plan(self, plan_id: str) -> dict:
         """
@@ -240,12 +269,11 @@ Respond with a JSON array of subtasks.
         Returns:
             Plan execution results
         """
-        print(f"🚀 Executing plan: {plan_id}")
-        
+        log_lines = [self.console.highlight("🚀", f"Executing plan: {plan_id}")]
         execution_results = []
         max_iterations = 10
         iteration = 0
-        
+
         while iteration < max_iterations:
             iteration += 1
             
@@ -253,25 +281,31 @@ Respond with a JSON array of subtasks.
             next_task = self.planner.get_next_task(plan_id)
             
             if not next_task:
-                print("✅ All tasks completed!")
+                log_lines.append(self.console.highlight("✅", "All tasks completed!"))
                 break
-            
-            print(f"\n📋 Executing task: {next_task.title}")
-            print(f"   Description: {next_task.description}")
-            print(f"   Priority: {next_task.priority.name}")
-            
+
+            log_lines.append(self.console.spacer())
+            log_lines.append(self.console.highlight("📋", f"Executing task: {next_task.title}"))
+            log_lines.extend(
+                self.console.key_values(
+                    [
+                        ("Description", next_task.description),
+                        ("Priority", next_task.priority.name),
+                    ]
+                )
+            )
+
             # Start the task
             if self.planner.start_task(next_task.id):
-                print(f"   🚀 Task started")
-                
+                log_lines.append(self.console.highlight("🚀", "Task started"))
+
                 # Execute the task
                 task_result = self._execute_task(next_task)
-                
+
                 # Mark task as completed
                 self.planner.complete_task(next_task.id, task_result)
-                
-                print(f"   ✅ Task completed")
-                
+                log_lines.append(self.console.highlight("✅", "Task completed"))
+
                 # Store task result in memory
                 self.memory.store(
                     content=task_result,
@@ -291,9 +325,9 @@ Respond with a JSON array of subtasks.
                     "result": task_result,
                     "status": "completed"
                 })
-                
+
             else:
-                print(f"   ❌ Failed to start task")
+                log_lines.append(self.console.highlight("❌", "Failed to start task"))
                 execution_results.append({
                     "task_id": next_task.id,
                     "title": next_task.title,
@@ -306,12 +340,13 @@ Respond with a JSON array of subtasks.
         
         # Get final plan status
         plan_summary = self.planner.get_plan_summary(plan_id)
-        
+
         return {
             "plan_id": plan_id,
             "execution_results": execution_results,
             "plan_summary": plan_summary,
-            "iterations": iteration
+            "iterations": iteration,
+            "log_lines": log_lines,
         }
     
     def _execute_task(self, task) -> dict:
@@ -358,11 +393,7 @@ Respond with a JSON array of subtasks.
     
     def demonstrate_memory(self):
         """Demonstrate memory capabilities."""
-        print("💾 Demonstrating Memory System")
-        print("=" * 50)
-        
-        # Store various types of information
-        print("📝 Storing information in memory...")
+        lines = [self.console.highlight("📝", "Storing information in memory...")]
         
         # Store user preferences
         self.memory.store(
@@ -388,117 +419,176 @@ Respond with a JSON array of subtasks.
             metadata={"topic": "AI agents", "timestamp": time.time()}
         )
         
-        print("✅ Information stored")
-        print()
-        
-        # Demonstrate memory retrieval
-        print("🔍 Retrieving information from memory...")
-        
-        # Search for specific information
+        lines.append(self.console.highlight("✅", "Information stored"))
+        lines.append(self.console.spacer())
+        lines.append(self.console.highlight("🔍", "Retrieving information from memory..."))
+
         results = self.memory.retrieve(query="python", limit=5)
-        print(f"  Found {len(results)} items related to 'python'")
-        
-        # Get context
         context = self.memory.get_context(recent_count=3, important_count=2)
-        print(f"  Recent memories: {len(context['recent_memories'])}")
-        print(f"  Important memories: {len(context['important_memories'])}")
-        
-        # Show memory statistics
         stats = self.memory.get_stats()
-        print(f"  Total items: {stats['total_items']}")
-        print(f"  Type distribution: {stats['type_distribution']}")
-        
-        print()
+
+        lines.extend(
+            self.console.key_values(
+                [
+                    ("Matches for 'python'", len(results)),
+                    ("Recent memories", len(context["recent_memories"])),
+                    ("Important memories", len(context["important_memories"])),
+                    ("Total stored items", stats["total_items"]),
+                    ("Type distribution", stats["type_distribution"]),
+                ]
+            )
+        )
+
+        print(
+            self.console.compose(
+                self.console.section("Memory System Demonstration", lines)
+            )
+        )
     
     def demonstrate_planning(self):
         """Demonstrate planning capabilities."""
-        print("📋 Demonstrating Planning System")
-        print("=" * 50)
-        
-        # Create and execute a simple plan
         goal = "Analyze and improve a Python function"
-        print(f"🎯 Creating plan for: {goal}")
-        
         result = self.create_and_execute_plan(goal)
-        
+
+        lines = result.get("log_lines", [])
+
         if "error" not in result:
-            print("✅ Plan execution completed!")
-            print(f"📊 Results: {len(result['execution_results'])} tasks executed")
-            
-            for task_result in result['execution_results']:
-                status_emoji = "✅" if task_result['status'] == 'completed' else "❌"
-                print(f"  {status_emoji} {task_result['title']}: {task_result['status']}")
-            
-            # Show plan summary
-            plan_summary = result['plan_summary']
-            progress = plan_summary.get('progress', {})
-            print(f"\n📈 Plan Progress:")
-            print(f"  Completion: {progress.get('completion_percentage', 0):.1f}%")
-            print(f"  Total tasks: {progress.get('total_tasks', 0)}")
-            print(f"  Completed: {progress.get('completed_tasks', 0)}")
-            print(f"  Duration: {progress.get('plan_duration', 0):.1f} minutes")
+            lines.append(self.console.spacer())
+            lines.append(self.console.highlight("✅", "Plan execution completed"))
+            lines.extend(
+                self.console.key_values(
+                    [("Executed tasks", len(result["execution_results"]))]
+                )
+            )
+
+            task_lines: list[str] = []
+            for task_result in result["execution_results"]:
+                status_emoji = "✅" if task_result["status"] == "completed" else "❌"
+                task_lines.extend(
+                    self.console.bullet_list(
+                        [f"{status_emoji} {task_result['title']} ({task_result['status']})"],
+                        bullet="-",
+                    )
+                )
+
+            if task_lines:
+                lines.append(self.console.spacer())
+                lines.append(self.console.highlight("🗂️", "Task results"))
+                lines.extend(task_lines)
+
+            plan_summary = result["plan_summary"]
+            progress = plan_summary.get("progress", {})
+            lines.append(self.console.spacer())
+            lines.append(self.console.highlight("📈", "Plan progress"))
+            lines.extend(
+                self.console.key_values(
+                    [
+                        ("Completion", f"{progress.get('completion_percentage', 0):.1f}%"),
+                        ("Total tasks", progress.get("total_tasks", 0)),
+                        ("Completed", progress.get("completed_tasks", 0)),
+                        ("Duration", f"{progress.get('plan_duration', 0):.1f} minutes"),
+                    ]
+                )
+            )
         else:
-            print(f"❌ Plan execution failed: {result['error']}")
-        
-        print()
+            lines.append(self.console.spacer())
+            lines.append(self.console.highlight("❌", f"Plan execution failed: {result['error']}"))
+
+        print(
+            self.console.compose(
+                self.console.section("Planning System Demonstration", lines)
+            )
+        )
     
     def demonstrate_multi_step_reasoning(self):
         """Demonstrate multi-step reasoning capabilities."""
-        print("🧠 Demonstrating Multi-Step Reasoning")
-        print("=" * 50)
-        
-        # Create a complex goal that requires multiple steps
         complex_goal = "Create a data analysis report with code review and recommendations"
-        print(f"🎯 Complex goal: {complex_goal}")
-        
-        # This will demonstrate how the agent can break down complex tasks
         result = self.create_and_execute_plan(complex_goal)
-        
+
+        lines = result.get("log_lines", [])
+
         if "error" not in result:
-            print("✅ Complex plan executed successfully!")
-            
-            # Show how the agent used memory and planning together
-            print("\n🔍 How the agent used memory and planning:")
-            
-            # Get recent memories
+            lines.append(self.console.spacer())
+            lines.append(self.console.highlight("✅", "Complex plan executed successfully"))
+
             recent_memories = self.memory.retrieve(item_type="task_result", limit=5)
-            print(f"  📝 Stored {len(recent_memories)} task results in memory")
-            
-            # Get plan information
             all_plans = self.planner.get_all_plans()
-            print(f"  📋 Created {len(all_plans)} plans")
-            
+
+            lines.append(self.console.spacer())
+            lines.append(self.console.highlight("🔍", "How memory and planning were used"))
+            lines.extend(
+                self.console.bullet_list(
+                    [
+                        f"📝 Stored {len(recent_memories)} recent task results",
+                        f"📋 Created {len(all_plans)} plans",
+                    ],
+                    bullet="-",
+                )
+            )
+
+            plan_progress_lines: list[str] = []
             for plan in all_plans:
                 progress = plan.get('progress', {})
-                print(f"    Plan '{plan['goal'][:30]}...': {progress.get('completion_percentage', 0):.1f}% complete")
+                plan_progress_lines.extend(
+                    self.console.bullet_list(
+                        [
+                            f"Plan '{plan['goal'][:30]}...' - {progress.get('completion_percentage', 0):.1f}% complete",
+                        ],
+                        bullet="•",
+                    )
+                )
+            if plan_progress_lines:
+                lines.append(self.console.spacer())
+                lines.append(self.console.highlight("📊", "Plan progress overview"))
+                lines.extend(plan_progress_lines)
         else:
-            print(f"❌ Complex plan failed: {result['error']}")
-        
-        print()
+            lines.append(self.console.spacer())
+            lines.append(self.console.highlight("❌", f"Complex plan failed: {result['error']}"))
+
+        print(
+            self.console.compose(
+                self.console.section("Multi-Step Reasoning Demonstration", lines)
+            )
+        )
     
     def run_interactive(self):
         """Run the agent in interactive mode."""
-        print("🎯 Planning Agent is ready! Type 'quit' to exit.")
-        print("Available commands:")
-        print("  - 'demo memory': Demonstrate memory system")
-        print("  - 'demo planning': Demonstrate planning system")
-        print("  - 'demo reasoning': Demonstrate multi-step reasoning")
-        print("  - 'plan <goal>': Create and execute a plan for a goal")
-        print("  - 'remember <info>': Store information in memory")
-        print("  - 'recall <query>': Search memory for information")
-        print("=" * 70)
-        
+        intro = self.console.compose(
+            self.console.banner("Planning Agent Interactive Mode"),
+            self.console.section(
+                "Available Commands",
+                self.console.bullet_list(
+                    [
+                        "Type 'quit' to exit",
+                        "'demo memory' to demonstrate memory system",
+                        "'demo planning' to demonstrate planning system",
+                        "'demo reasoning' to demonstrate multi-step reasoning",
+                        "'plan <goal>' to create and execute a plan",
+                        "'remember <info>' to store information",
+                        "'recall <query>' to search memory",
+                    ],
+                    bullet="-",
+                ),
+            ),
+        )
+        print(intro)
+
         while True:
             try:
                 user_input = input("\n👤 You: ").strip()
-                
+
                 if user_input.lower() in ['quit', 'exit', 'bye']:
-                    print("\n👋 Goodbye! Thanks for trying the Planning Agent.")
+                    print(
+                        self.console.section(
+                            "Session Closed",
+                            [self.console.highlight("👋", "Goodbye! Thanks for trying the Planning Agent.")],
+                        )
+                    )
                     break
-                
+
                 if not user_input:
                     continue
-                
+
                 # Handle special commands
                 if user_input.lower() == 'demo memory':
                     self.demonstrate_memory()
@@ -513,16 +603,29 @@ Respond with a JSON array of subtasks.
                 # Handle planning commands
                 if user_input.lower().startswith('plan '):
                     goal = user_input[5:]  # Remove 'plan ' prefix
-                    print(f"🎯 Creating plan for: {goal}")
                     result = self.create_and_execute_plan(goal)
-                    
-                    if "error" not in result:
-                        print("✅ Plan completed!")
-                        print(f"📊 Executed {len(result['execution_results'])} tasks")
+                    lines = result.get("log_lines", [])
+
+                    if "error" in result:
+                        lines.append(self.console.spacer())
+                        lines.append(self.console.highlight("❌", f"Plan failed: {result['error']}"))
                     else:
-                        print(f"❌ Plan failed: {result['error']}")
+                        lines.append(self.console.spacer())
+                        lines.append(self.console.highlight("✅", "Plan completed"))
+                        lines.extend(
+                            self.console.key_values(
+                                [("Executed tasks", len(result["execution_results"]))]
+                            )
+                        )
+
+                    print(
+                        self.console.section(
+                            "Custom Plan",
+                            lines,
+                        )
+                    )
                     continue
-                
+
                 # Handle memory commands
                 if user_input.lower().startswith('remember '):
                     info = user_input[9:]  # Remove 'remember ' prefix
@@ -532,105 +635,163 @@ Respond with a JSON array of subtasks.
                         importance=0.7,
                         metadata={"timestamp": time.time()}
                     )
-                    print(f"💾 Stored in memory with ID: {memory_id}")
+                    print(
+                        self.console.section(
+                            "Memory Update",
+                            [self.console.highlight("💾", f"Stored information with ID: {memory_id}")],
+                        )
+                    )
                     continue
-                
+
                 if user_input.lower().startswith('recall '):
                     query = user_input[7:]  # Remove 'recall ' prefix
-                    print(f"🔍 Searching memory for: '{query}'")
                     results = self.memory.retrieve(query=query, limit=5)
-                    
+                    lines = [self.console.highlight("🔍", f"Results for '{query}'")]
+
                     if results:
-                        print(f"✅ Found {len(results)} items:")
-                        for i, item in enumerate(results[:3], 1):
-                            print(f"  {i}. {item.content[:100]}...")
+                        lines.append(self.console.highlight("✅", f"Found {len(results)} items"))
+                        preview = [f"{i}. {item.content[:100]}..." for i, item in enumerate(results[:3], 1)]
+                        lines.extend(self.console.bullet_list(preview, bullet="•"))
                     else:
-                        print("❌ No matching items found")
+                        lines.append(self.console.highlight("❌", "No matching items found"))
+
+                    print(self.console.section("Memory Search", lines))
                     continue
-                
+
                 # Default: use the agent with memory
-                print(f"🤔 Agent is thinking (with memory context)...")
-                
                 start_time = time.time()
                 result = self.run_with_memory(user_input)
                 end_time = time.time()
-                
-                print(f"\n🤖 Agent: ", end="")
-                
-                if "error" in result:
-                    print(f"❌ Error: {result['error']}")
-                elif "response" in result:
-                    print(result["response"])
-                else:
-                    print("🤷 No response generated")
-                
+
                 response_time = end_time - start_time
-                print(f"\n⏱️  Response time: {response_time:.2f} seconds")
-                
-                # Show memory and planning stats
                 memory_stats = self.memory.get_stats()
-                print(f"📊 Memory: {memory_stats['total_items']} items, Tool calls: {self.get_stats()['tool_calls']}")
-                
+                stats = self.get_stats()
+
+                response_lines: list[str] = []
+                if "error" in result:
+                    response_lines.append(self.console.highlight("❌", f"Error: {result['error']}"))
+                elif "response" in result:
+                    response_lines.extend(
+                        self.console.key_values([("Response", result["response"])]))
+                else:
+                    response_lines.append(self.console.highlight("🤷", "No response generated"))
+
+                response_lines.append(self.console.spacer())
+                response_lines.extend(
+                    self.console.key_values(
+                        [
+                            ("Response time", f"{response_time:.2f} seconds"),
+                            ("Memory items", memory_stats["total_items"]),
+                            ("Tool calls", stats.get("tool_calls", 0)),
+                        ]
+                    )
+                )
+
+                print(self.console.section("Agent Response", response_lines))
+
             except KeyboardInterrupt:
-                print("\n\n👋 Interrupted by user. Goodbye!")
+                print(
+                    self.console.section(
+                        "Session Closed",
+                        [self.console.highlight("👋", "Interrupted by user. Goodbye!")],
+                    )
+                )
                 break
             except Exception as e:
-                print(f"\n❌ Unexpected error: {e}")
-                print("🔄 Continuing...")
+                print(
+                    self.console.section(
+                        "Warning",
+                        [
+                            self.console.highlight("❌", f"Unexpected error: {e}"),
+                            self.console.highlight("🔄", "Continuing..."),
+                        ],
+                    )
+                )
 
 
 def main():
     """Main function to run the example."""
-    print("🧠 AI Agent Demonstration - Example 3: Planning Agent with Memory")
-    print("=" * 70)
-    print()
-    
-    # Check configuration
+    console = ConsoleLayout(width=70)
+
     config = get_config()
-    print(f"🔧 Configuration:")
-    print(f"  Ollama URL: {config['ollama_base_url']}")
-    print(f"  Default Model: {config['default_model']}")
-    print(f"  Agent Timeout: {config['agent_timeout']} seconds")
-    print(f"  Memory Max Items: {config['memory_max_size']}")
-    print(f"  Planning Max Depth: {config['planning_max_depth']}")
-    print()
-    
-    # Check if user wants to run demos or interactive mode
-    print("Choose an option:")
-    print("1. Run all demonstrations")
-    print("2. Interactive mode (use memory and planning manually)")
-    print("3. Exit")
-    
+    header = console.compose(
+        console.banner("AI Agent Demonstration", "Example 3: Planning Agent with Memory"),
+        console.section(
+            "Configuration",
+            console.key_values(
+                [
+                    ("Ollama URL", config['ollama_base_url']),
+                    ("Default Model", config['default_model']),
+                    ("Agent Timeout", f"{config['agent_timeout']} seconds"),
+                    ("Memory Max Items", config['memory_max_size']),
+                    ("Planning Max Depth", config['planning_max_depth']),
+                ]
+            ),
+        ),
+        console.section(
+            "Choose an Option",
+            console.bullet_list(
+                [
+                    "1. Run all demonstrations",
+                    "2. Interactive mode (use memory and planning manually)",
+                    "3. Exit",
+                ],
+                bullet="•",
+            ),
+        ),
+    )
+    print(header)
+
     while True:
         try:
             choice = input("\nEnter your choice (1-3): ").strip()
-            
+
             if choice == "1":
                 agent = PlanningAgent()
-                print("\n" + "="*70)
+                print(
+                    console.section(
+                        "Demonstrations",
+                        [console.highlight("🚀", "Running memory, planning, and reasoning demos...")],
+                    )
+                )
                 agent.demonstrate_memory()
-                print("\n" + "="*70)
                 agent.demonstrate_planning()
-                print("\n" + "="*70)
                 agent.demonstrate_multi_step_reasoning()
-                print("\n🎯 All demonstrations completed!")
+                print(
+                    console.section(
+                        "Demonstrations",
+                        [console.highlight("🎯", "All demonstrations completed!")],
+                    )
+                )
                 break
             elif choice == "2":
                 agent = PlanningAgent()
                 agent.run_interactive()
                 break
             elif choice == "3":
-                print("👋 Goodbye!")
+                print(console.section("Goodbye", [console.highlight("👋", "See you next time!")]))
                 break
             else:
-                print("❌ Invalid choice. Please enter 1, 2, or 3.")
-                
+                print(
+                    console.section(
+                        "Invalid Choice",
+                        [console.highlight("❌", "Please enter 1, 2, or 3.")],
+                    )
+                )
+
         except KeyboardInterrupt:
-            print("\n\n👋 Interrupted by user. Goodbye!")
+            print(console.section("Goodbye", [console.highlight("👋", "Interrupted by user. Goodbye!")]))
             break
         except Exception as e:
-            print(f"❌ Error: {e}")
-            print("🔄 Please try again.")
+            print(
+                console.section(
+                    "Warning",
+                    [
+                        console.highlight("❌", f"Error: {e}"),
+                        console.highlight("🔄", "Please try again."),
+                    ],
+                )
+            )
 
 
 if __name__ == "__main__":
